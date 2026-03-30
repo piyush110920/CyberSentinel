@@ -14,6 +14,6 @@ const LogSchema = new mongoose.Schema({
   severity: { type: String, enum: ['Low', 'Medium', 'High', 'Critical'] },
   action_taken: { type: String },
   description: { type: String }
-});
+}, { collection: 'logs' });
 
 module.exports = mongoose.model('Log', LogSchema);

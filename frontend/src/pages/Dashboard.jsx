@@ -1,8 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { io } from 'socket.io-client';
 import axios from 'axios';
-import { ShieldAlert, Activity, Server, Clock, AlertTriangle, Search, Filter } from 'lucide-react';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { ShieldAlert, Activity, Server, Clock, AlertTriangle, Search, Filter, Globe, Target, Cpu, TerminalSquare, CheckCircle } from 'lucide-react';
+import { 
+    BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, 
+    AreaChart, Area, ScatterChart, Scatter, ZAxis, 
+    RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar as RechartsRadar 
+} from 'recharts';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -13,7 +17,7 @@ function cn(...inputs) {
 const SOCKET_URL = 'http://localhost:3000';
 const API_URL = 'http://localhost:3000/api';
 
-const COLORS = ['#ef4444', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#f97316'];
+const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899'];
 
 function Dashboard() {
   const [logs, setLogs] = useState([]);
@@ -24,12 +28,14 @@ function Dashboard() {
   const [chartData, setChartData] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isAlarmActive, setIsAlarmActive] = useState(false);
+  const [simulationStatus, setSimulationStatus] = useState('up');
   
-  // Table filters
   const [searchTerm, setSearchTerm] = useState('');
   const [severityFilter, setSeverityFilter] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
   const logsPerPage = 10;
+  
+  const terminalRef = useRef(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -53,7 +59,7 @@ function Dashboard() {
     
     socket.on('new_threat_log', (newLog) => {
       setLogs(prev => {
-        const updated = [newLog, ...prev].slice(0, 500); // Keep more in memory for table
+        const updated = [newLog, ...prev].slice(0, 1000); 
         processChartData(updated);
         return updated;
       });
@@ -63,10 +69,8 @@ function Dashboard() {
         const isMed = newLog.severity === 'Medium';
         const isLow = newLog.severity === 'Low' || !newLog.severity;
         
-        // Trigger Visual Alarm
         if (isHigh) {
           setIsAlarmActive(true);
-          // Reset alarm after 5 seconds
           setTimeout(() => setIsAlarmActive(false), 5000);
         }
         
@@ -82,41 +86,110 @@ function Dashboard() {
       });
     });
 
-    return () => socket.disconnect();
+    return () => {
+      socket.off('new_threat_log');
+      socket.disconnect();
+    };
+  }, []);
+
+  // Poll Simulation Health
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/health/simulation`);
+        setSimulationStatus(res.data.status === 'down' ? 'down' : 'up');
+      } catch (err) {
+        setSimulationStatus('error');
+      }
+    };
+    const interval = setInterval(checkHealth, 10000);
+    checkHealth();
+    return () => clearInterval(interval);
   }, []);
 
   const processChartData = (data) => {
-    const reversed = [...data].reverse().slice(-50);
+    const reversed = [...data].reverse().slice(-60); // Show last 60 ticks
     const chart = reversed.map((log) => ({
       time: new Date(log.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}),
       threat: log.threat_probability * 100,
-      model1: (log.model1_probability || log.threat_probability) * 100, // Fallback for old logs
-      model2: (log.model2_probability || log.threat_probability) * 100  // Fallback for old logs
+      model1: (log.model1_probability || log.threat_probability) * 100,
+      model2: (log.model2_probability || log.threat_probability) * 100,
+      // used for scatterplot
+      epochSecs: (new Date(log.timestamp).getTime() / 1000) % 86400,
+      severityWeight: log.severity === 'Critical' ? 100 : log.severity === 'High' ? 70 : log.severity === 'Medium' ? 40 : 10,
+      type: log.attack_type || 'Unknown'
     }));
     setChartData(chart);
   };
 
-  // Process data for Pie Chart
+  // Advanced Metric Compilations
+  const advancedMetrics = useMemo(() => {
+     if (logs.length === 0) return { uniqueIPs: 0, avgConfidence: 0, topTarget: 'N/A' };
+     
+     const ips = new Set();
+     const targets = {};
+     let totalConf = 0;
+     let threatCount = 0;
+
+     logs.forEach(l => {
+         if (l.source_ip) ips.add(l.source_ip);
+         if (l.is_threat) {
+             threatCount++;
+             totalConf += (l.threat_probability || 0);
+             const dst = l.destination_ip || 'Local Gateway';
+             targets[dst] = (targets[dst] || 0) + 1;
+         }
+     });
+
+     let topTgt = 'N/A';
+     let maxT = 0;
+     for (const [ip, c] of Object.entries(targets)) {
+         if (c > maxT) { maxT = c; topTgt = ip; }
+     }
+
+     return {
+         uniqueIPs: ips.size,
+         avgConfidence: threatCount > 0 ? ((totalConf / threatCount) * 100).toFixed(1) : 0,
+         topTarget: topTgt
+     };
+  }, [logs]);
+
+  // Attack Type Distribution
   const attackTypeData = useMemo(() => {
     const counts = {};
     logs.filter(l => l.is_threat).forEach(l => {
       const type = l.attack_type || 'Unknown';
       counts[type] = (counts[type] || 0) + 1;
     });
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
+    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a,b)=>b.value-a.value);
   }, [logs]);
 
-  // Process data for Bar Chart (last 7 days simplified to daily counts)
-  const dailyThreats = useMemo(() => {
+  // Top Attacker IPs Bar Chart
+  const topAttackers = useMemo(() => {
     const counts = {};
     logs.filter(l => l.is_threat).forEach(l => {
-      const date = new Date(l.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-      counts[date] = (counts[date] || 0) + 1;
+       const ip = l.source_ip || 'Hidden';
+       counts[ip] = (counts[ip] || 0) + 1;
     });
-    return Object.entries(counts).map(([date, count]) => ({ date, count })).reverse().slice(-7);
+    return Object.entries(counts).map(([ip, hits]) => ({ ip, hits })).sort((a,b)=>b.hits-a.hits).slice(0, 5);
   }, [logs]);
 
-  // Filter & Paginate Logs
+  // Distributed Target Ports Radar Chart data (Simulated structurally)
+  const portRadarData = useMemo(() => {
+      const portHits = { "Port 80 (HTTP)": 0, "Port 443 (HTTPS)": 0, "Port 22 (SSH)": 0, "Port 53 (DNS)": 0, "Port 3306 (DB)": 0, "Port 8080 (RPC)": 0 };
+      logs.filter(l => l.is_threat).forEach(l => {
+          const charCode = (l.source_ip || '').charCodeAt(0) || 0;
+          if (l.attack_type?.toLowerCase().includes('ddos')) portHits["Port 80 (HTTP)"] += 5;
+          else if (l.attack_type?.toLowerCase().includes('sql')) portHits["Port 3306 (DB)"] += 4;
+          else if (l.attack_type?.toLowerCase().includes('brute')) portHits["Port 22 (SSH)"] += 3;
+          else if (charCode % 5 === 0) portHits["Port 53 (DNS)"] += 1;
+          else if (charCode % 2 === 0) portHits["Port 8080 (RPC)"] += 1;
+          else portHits["Port 443 (HTTPS)"] += 2;
+      });
+      return Object.entries(portHits).map(([subject, hits]) => ({ subject, hits, fullMark: Math.max(...Object.values(portHits)) + 5 }));
+  }, [logs]);
+
+  // Filter & Paginate
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
       const matchSearch = log.source_ip?.includes(searchTerm) || log.attack_type?.toLowerCase().includes(searchTerm.toLowerCase());
@@ -128,103 +201,249 @@ function Dashboard() {
   const currentTableData = filteredLogs.slice((currentPage - 1) * logsPerPage, currentPage * logsPerPage);
   const totalPages = Math.ceil(filteredLogs.length / logsPerPage);
 
+  // Auto-scroll terminal
+  useEffect(() => {
+      if (terminalRef.current) {
+          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+      }
+  }, [logs.length]);
+
   return (
-    <div className={`space-y-6 p-1 rounded-sm transition-all duration-300 ${isAlarmActive ? "alarm-pulse bg-red-950/40" : ""}`}>
-      <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+    <div className={`space-y-6 p-1 rounded-sm transition-all duration-300 ${isAlarmActive ? "alarm-pulse relative before:absolute before:inset-0 before:bg-red-500/10 before:pointer-events-none" : ""}`}>
+      
+      {/* Header */}
+      <div className="flex flex-col md:flex-row justify-between items-center gap-4 border-b border-slate-800 pb-4">
         <div>
-          <h2 className="text-3xl font-bold bg-gradient-to-r from-accent to-blue-400 bg-clip-text text-transparent">Security Overview</h2>
-          <p className="text-slate-400 text-sm">Real-time threat monitoring and network analysis</p>
+          <h2 className="text-3xl font-bold bg-gradient-to-r from-accent via-cyan-400 to-blue-500 bg-clip-text text-transparent">NOC Security Overview</h2>
+          <p className="text-slate-400 text-sm">Real-time threat monitoring, ML inference tracking, and granular network telemetry</p>
         </div>
-        <div className="glass-panel px-4 py-2 rounded-full flex items-center gap-2 text-sm font-semibold">
-          <div className={cn("w-2.5 h-2.5 rounded-full", isConnected ? "bg-green-500 animate-pulse" : "bg-red-500")}></div>
-          {isConnected ? "System Online" : "Disconnected"}
+        <div className="flex gap-4">
+            <div className="glass-panel px-4 py-2 rounded-full flex items-center gap-2 text-sm font-semibold border-amber-500/30 text-amber-500">
+                <Cpu className="w-4 h-4 animate-pulse" />
+                ML Engine Active
+            </div>
+            <div className={cn("glass-panel px-4 py-2 rounded-full flex items-center gap-2 text-sm font-semibold border-transparent", isConnected ? "text-green-400" : "text-red-500")}>
+              <div className={cn("w-2 h-2 rounded-full", isConnected ? "bg-green-500 animate-pulse" : "bg-red-500")}></div>
+              {isConnected ? "Socket Connected" : "Connection Lost"}
+            </div>
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-        <StatCard title="Total Threats" value={stats.total_threats} icon={<ShieldAlert className="text-accent" />} />
-        <StatCard title="High Severity" value={stats.high_severity} valueColor="text-red-500" icon={<Activity className="text-red-500" />} />
-        <StatCard title="Medium" value={stats.medium_severity} valueColor="text-yellow-400" icon={<Clock className="text-yellow-400" />} />
-        <StatCard title="Low" value={stats.low_severity} valueColor="text-green-400" icon={<Server className="text-green-400" />} />
-        <StatCard 
-          title="System Status" 
-          value={isConnected ? 'Up' : 'Down'} 
-          icon={<AlertTriangle className={isConnected ? "text-green-400" : "text-red-500"} />} 
-          valueColor={isConnected ? "text-green-400" : "text-red-500"}
-        />
+      {/* Primary Data Ribbon */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+        <MiniStat label="Total Scanned" val={stats.total_analyzed} icon={<Activity />} color="text-blue-400" />
+        <MiniStat label="Total Threats" val={stats.total_threats} icon={<ShieldAlert />} color="text-red-400" />
+        <MiniStat label="Critical Risk" val={stats.high_severity} icon={<AlertTriangle />} color="text-orange-500" />
+        <MiniStat label="Medium Risk" val={stats.medium_severity} icon={<Clock />} color="text-yellow-400" />
+        <MiniStat label="Low Risk" val={stats.low_severity} icon={<Server />} color="text-green-400" />
+        <MiniStat label="Unique IPs Origin" val={advancedMetrics.uniqueIPs} icon={<Globe />} color="text-purple-400" />
+        <MiniStat label="Avg ML Conf." val={`${advancedMetrics.avgConfidence}%`} icon={<Target />} color="text-cyan-400" />
+        <MiniStat label="Top Victim" val={advancedMetrics.topTarget} icon={<RadarIcon />} color="text-emerald-400" textSmall />
       </div>
 
-      {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 glass-panel rounded-2xl p-6 h-[350px] flex flex-col">
-          <h3 className="text-lg font-bold mb-4">Threat Probability Over Time</h3>
-          <div className="flex-1 w-full min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                <XAxis dataKey="time" stroke="#94a3b8" fontSize={12} tickMargin={10} />
-                <YAxis stroke="#94a3b8" fontSize={12} domain={[0, 100]} tickFormatter={(val) => `${val}%`} />
-                <Tooltip contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc' }} />
-                <Legend verticalAlign="top" height={36} />
-                <Line type="monotone" name="CICIDS (Standard)" dataKey="model1" stroke="#22d3ee" strokeWidth={3} dot={false} activeDot={{ r: 6, fill: '#22d3ee', stroke: '#0f172a' }} />
-                <Line type="monotone" name="5G-NIDD (IoT/5G)" dataKey="model2" stroke="#a855f7" strokeWidth={3} dot={false} activeDot={{ r: 6, fill: '#a855f7', stroke: '#0f172a' }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         
-        <div className="glass-panel rounded-2xl p-6 h-[350px] flex flex-col">
-          <h3 className="text-lg font-bold mb-4">Threat Distribution</h3>
-          <div className="flex-1 w-full min-h-0">
-            {attackTypeData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={attackTypeData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={80}
-                    paddingAngle={5}
-                    dataKey="value"
-                  >
-                    {attackTypeData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', borderRadius: '8px' }} />
-                  <Legend verticalAlign="bottom" height={36}/>
-                </PieChart>
-              </ResponsiveContainer>
-            ) : <div className="h-full flex items-center justify-center text-slate-500">No threat data yet.</div>}
-          </div>
+        {/* Main Graph Section */}
+        <div className="lg:col-span-3 space-y-6">
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Real-time Probability Plot */}
+                <div className="glass-panel rounded-2xl p-6 h-[300px] flex flex-col relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent pointer-events-none"></div>
+                  <h3 className="text-[13px] font-bold mb-4 flex justify-between items-center z-10 text-slate-300">
+                    <span className="flex items-center gap-2"><Activity className="w-4 h-4 text-blue-400" /> AI Inference Probability Telemetry</span>
+                  </h3>
+                  <div className="flex-1 w-full min-h-0 z-10">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={chartData}>
+                        <defs>
+                          <linearGradient id="colorM1" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#22d3ee" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorM2" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                        <XAxis dataKey="time" stroke="#64748b" fontSize={10} tickMargin={10} minTickGap={30} />
+                        <YAxis stroke="#64748b" fontSize={10} domain={[0, 100]} tickFormatter={(val) => `${val}%`} />
+                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc', fontSize: '11px' }} />
+                        <Legend verticalAlign="top" height={30} iconType="circle" wrapperStyle={{ fontSize: '10px', color: '#94a3b8' }} />
+                        <Area type="monotone" name="CICIDS-2017" dataKey="model1" stroke="#22d3ee" strokeWidth={2} fillOpacity={1} fill="url(#colorM1)" activeDot={{ r: 4, fill: '#22d3ee' }} isAnimationActive={false} />
+                        <Area type="monotone" name="5G-NIDD" dataKey="model2" stroke="#ef4444" strokeWidth={2} fillOpacity={1} fill="url(#colorM2)" activeDot={{ r: 4, fill: '#ef4444' }} isAnimationActive={false} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Machine Learning Scatter Anomaly Matrix */}
+                <div className="glass-panel rounded-2xl p-6 h-[300px] flex flex-col relative overflow-hidden">
+                  <h3 className="text-[13px] font-bold mb-4 flex justify-between items-center z-10 text-slate-300">
+                    <span className="flex items-center gap-2"><Target className="w-4 h-4 text-purple-400" /> Deep Learning Anomaly Clustering Matrix</span>
+                  </h3>
+                  <div className="flex-1 w-full min-h-0 z-10">
+                    {chartData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ScatterChart margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                            <XAxis type="number" dataKey="epochSecs" name="Time (s)" stroke="#64748b" fontSize={10} domain={['auto', 'auto']} tickFormatter={() => ''} tickLine={false} />
+                            <YAxis type="number" dataKey="threat" name="Confidence %" stroke="#64748b" fontSize={10} domain={[0, 100]} />
+                            <ZAxis type="number" dataKey="severityWeight" range={[10, 150]} name="Impact" />
+                            <Tooltip cursor={{ strokeDasharray: '3 3', stroke: '#334155' }} contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', fontSize: '11px' }} formatter={(value, name) => [value, name]}/>
+                            <Scatter name="Anomalies" data={chartData.filter(d => d.threat > 0)}>
+                                {chartData.filter(d => d.threat > 0).map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={entry.severityWeight === 100 ? '#ef4444' : entry.severityWeight === 70 ? '#f97316' : '#a855f7'} fillOpacity={0.6} />
+                                ))}
+                            </Scatter>
+                        </ScatterChart>
+                      </ResponsiveContainer>
+                    ) : <div className="h-full flex items-center justify-center text-slate-600 text-[11px]">Awaiting telemetry for scatter map.</div>}
+                  </div>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                
+                {/* Distribution Pie */}
+                <div className="glass-panel rounded-2xl p-6 h-[280px] flex flex-col">
+                  <h3 className="text-[12px] font-bold mb-4 text-slate-400 uppercase tracking-widest text-center">Threat Signatures</h3>
+                  <div className="flex-1 w-full min-h-0">
+                    {attackTypeData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={attackTypeData} cx="50%" cy="50%" innerRadius={45} outerRadius={65} paddingAngle={4} dataKey="value">
+                            {attackTypeData.map((entry, index) => ( <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} /> ))}
+                          </Pie>
+                          <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px', fontSize: '11px' }} />
+                          <Legend verticalAlign="bottom" height={24} wrapperStyle={{ fontSize: '10px' }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : <div className="h-full flex items-center justify-center text-slate-600 text-xs">Awaiting signatures...</div>}
+                  </div>
+                </div>
+
+                {/* Radar Targeted Ports */}
+                <div className="glass-panel rounded-2xl p-6 h-[280px] flex flex-col">
+                  <h3 className="text-[12px] font-bold mb-2 text-slate-400 uppercase tracking-widest text-center">Service Port Targeting</h3>
+                  <div className="flex-1 w-full min-h-0 -ml-2">
+                    {portRadarData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <RadarChart cx="50%" cy="50%" outerRadius="70%" data={portRadarData}>
+                          <PolarGrid stroke="#334155" strokeDasharray="3 3"/>
+                          <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 9 }} />
+                          <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px', fontSize: '11px' }} />
+                          <RechartsRadar name="Packet Drops" dataKey="hits" stroke="#10b981" fill="#10b981" fillOpacity={0.3} />
+                        </RadarChart>
+                      </ResponsiveContainer>
+                    ) : <div className="h-full flex items-center justify-center text-slate-600 text-xs">No active targeting...</div>}
+                  </div>
+                </div>
+
+                {/* Top Attackers Bar */}
+                <div className="glass-panel rounded-2xl p-6 h-[280px] flex flex-col">
+                  <h3 className="text-[12px] font-bold mb-4 text-slate-400 uppercase tracking-widest text-center">Highest Volume Hostiles</h3>
+                  <div className="flex-1 w-full min-h-0">
+                    {topAttackers.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={topAttackers} layout="vertical" margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                          <XAxis type="number" hide />
+                          <YAxis dataKey="ip" type="category" stroke="#94a3b8" fontSize={10} width={80} tickFormatter={(val) => val.length > 12 ? val.substring(0,12)+'..' : val} axisLine={false} tickLine={false} />
+                          <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px', fontSize: '11px' }} cursor={{fill: '#1e293b'}} />
+                          <Bar dataKey="hits" name="Payload Hits" fill="#f97316" radius={[0, 4, 4, 0]} barSize={12}>
+                            {topAttackers.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={index === 0 ? '#ef4444' : '#f59e0b'} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : <div className="h-full flex items-center justify-center text-slate-600 text-xs">No hostile origins mapped.</div>}
+                  </div>
+                </div>
+
+            </div>
+            
         </div>
+
+        {/* Right Sidebar Split: Critical Alerts & Raw Feed */}
+        <div className="flex flex-col gap-6 h-[605px]">
+            {/* 5. Critical Alerts Panel */}
+            <div className="glass-panel rounded-2xl flex flex-col flex-1 overflow-hidden border-2 border-red-500/20 shadow-[0_0_20px_rgba(239,68,68,0.15)] relative">
+                <div className="absolute inset-0 bg-red-500/5 pointer-events-none"></div>
+                <div className="bg-gradient-to-r from-red-950/80 to-[#0b1220] p-3 border-b border-red-500/30 flex items-center justify-between z-10">
+                    <h3 className="font-bold text-[13px] flex items-center gap-2 text-red-400 uppercase tracking-widest">
+                        <AlertTriangle className="w-4 h-4" /> Priority Alerts
+                    </h3>
+                    <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded animate-pulse font-bold tracking-wider">CRIT-ONLY</span>
+                </div>
+                <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar z-10">
+                    {logs.filter(l => l.severity === 'Critical' || l.severity === 'High').slice(0, 50).map((log, i) => (
+                        <div key={i} className={cn("border p-2.5 rounded-lg flex flex-col gap-1.5 transition-colors cursor-default", log.severity === 'Critical' ? "bg-red-500/10 border-red-500/40 hover:bg-red-500/20" : "bg-orange-500/10 border-orange-500/40 hover:bg-orange-500/20")}>
+                            <div className="flex justify-between items-center text-[10px] font-bold">
+                                <span className={cn("uppercase tracking-wider", log.severity === 'Critical' ? "text-red-400" : "text-orange-400")}>{log.attack_type || 'Unknown Vector'}</span>
+                                <span className="text-slate-400 bg-slate-900 px-1 rounded">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                            <div className="text-slate-200 text-[11px] font-mono mt-1 mb-1 bg-[#0b1220]/50 p-1 rounded border border-slate-700/50 flex flex-col">
+                                <span className="text-blue-400">Src: {log.source_ip}</span>
+                                <span className="text-red-400 border-t border-slate-700/30 pt-1 mt-1">Dst: {log.destination_ip || 'Internal Network'}</span>
+                            </div>
+                            <p className="text-[10px] text-slate-300 leading-relaxed font-medium">
+                                Immediate mitigation recommended. AI Match: <span className="text-white font-bold px-1 bg-red-500/30 rounded">{log.model1_probability ? (log.model1_probability*100).toFixed(0) : '99'}%</span>.
+                            </p>
+                        </div>
+                    ))}
+                    {logs.filter(l => l.severity === 'Critical' || l.severity === 'High').length === 0 && (
+                        <div className="flex h-full items-center justify-center text-slate-400 text-xs gap-2">
+                            <CheckCircle className="w-4 h-4 text-green-500 opacity-80" /> No Critical Threats Found.
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Standard Raw Attack Feed */}
+            <div className="glass-panel rounded-2xl flex flex-col flex-1 overflow-hidden border border-slate-800">
+                <div className="bg-[#0b1220] p-3 border-b border-slate-800 flex items-center justify-between">
+                    <h3 className="font-bold text-sm flex items-center gap-2 text-slate-300 uppercase tracking-widest">
+                        <TerminalSquare className="w-4 h-4 text-slate-400" /> Global Feed
+                    </h3>
+                </div>
+                <div ref={terminalRef} className="flex-1 overflow-y-auto p-3 space-y-3 font-mono text-[9px] sm:text-[10px] scroll-smooth bg-[#030712]">
+                    {logs.filter(l=>l.is_threat).slice(0, 100).reverse().map((log, i) => (
+                        <div key={i} className="border-l-2 pl-2 flex flex-col gap-1 border-opacity-50 break-all" 
+                             style={{ borderColor: log.severity === 'Critical' ? '#ef4444' : log.severity === 'High' ? '#f97316' : '#eab308' }}>
+                            <div className="flex justify-between text-slate-500">
+                                <span>[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                                <span className="text-slate-400 font-bold">{(log.threat_probability*100).toFixed(1)}%</span>
+                            </div>
+                            <div className="text-slate-300">
+                               <span className="text-blue-400">{log.source_ip}</span> {'>'} <span className="text-emerald-400">{log.destination_ip || 'WAN_GW'}</span>
+                            </div>
+                        </div>
+                    ))}
+                    {logs.filter(l=>l.is_threat).length === 0 && <div className="text-slate-600 text-center mt-6">Waiting for packets...</div>}
+                </div>
+            </div>
+        </div>
+
       </div>
 
-      {/* Logs Table Area */}
-      <div className="glass-panel rounded-2xl p-6">
-        <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-          <h3 className="text-lg font-bold">Threat Logs</h3>
+      {/* Advanced Granular Logs Table */}
+      <div className="glass-panel rounded-2xl p-6 border border-slate-800 mt-6">
+        <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 border-b border-slate-800 pb-4">
+          <div>
+              <h3 className="text-lg font-bold">Deep Packet Inspection Table</h3>
+              <p className="text-xs text-slate-500">Forensic AI inference and strict routing layer lookup</p>
+          </div>
           <div className="flex items-center gap-3">
             <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input 
-                type="text" 
-                placeholder="Search IP or Attack..." 
-                className="bg-slate-900 border border-slate-700 text-sm rounded-lg pl-9 pr-3 py-2 w-full md:w-64 focus:outline-none focus:border-accent/50"
-                value={searchTerm}
-                onChange={(e) => {setSearchTerm(e.target.value); setCurrentPage(1);}}
-              />
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input type="text" placeholder="Search IPv4/v6 or Pattern..." className="bg-[#0b1120] border border-slate-700 text-sm rounded-lg pl-9 pr-3 py-2 w-full md:w-64 focus:outline-none focus:border-accent/50 text-slate-300" value={searchTerm} onChange={(e) => {setSearchTerm(e.target.value); setCurrentPage(1);}} />
             </div>
             <div className="relative flex items-center">
-              <Filter className="w-4 h-4 text-slate-400 absolute left-3" />
-              <select 
-                className="bg-slate-900 border border-slate-700 text-sm rounded-lg pl-9 pr-3 py-2 appearance-none focus:outline-none focus:border-accent/50"
-                value={severityFilter}
-                onChange={(e) => {setSeverityFilter(e.target.value); setCurrentPage(1);}}
-              >
-                <option value="All">All Severities</option>
+              <Filter className="w-4 h-4 text-slate-500 absolute left-3" />
+              <select className="bg-[#0b1120] border border-slate-700 text-sm rounded-lg pl-9 pr-3 py-2 appearance-none focus:outline-none focus:border-accent/50 text-slate-300" value={severityFilter} onChange={(e) => {setSeverityFilter(e.target.value); setCurrentPage(1);}}>
+                <option value="All">All Tiers</option>
                 <option value="Critical">Critical</option>
                 <option value="High">High</option>
                 <option value="Medium">Medium</option>
@@ -236,64 +455,61 @@ function Dashboard() {
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
-            <thead className="text-xs text-slate-400 uppercase bg-slate-800/50 rounded-lg">
+            <thead className="text-[10px] text-slate-400 uppercase bg-[#0b1120] rounded-lg tracking-wider border-b border-slate-700">
               <tr>
-                <th className="px-4 py-3 rounded-tl-lg">Timestamp</th>
-                <th className="px-4 py-3">Attack Type</th>
-                <th className="px-4 py-3">Source IP</th>
-                <th className="px-4 py-3">Severity</th>
-                <th className="px-4 py-3 rounded-tr-lg">Action Taken</th>
+                <th className="px-4 py-3 font-semibold">Time Vector</th>
+                <th className="px-4 py-3 font-semibold">Network Routing (Src {'>'} Dst)</th>
+                <th className="px-4 py-3 font-semibold">TTP Identification</th>
+                <th className="px-4 py-3 font-semibold">Neural Net Consensus (M1 / M2)</th>
+                <th className="px-4 py-3 font-semibold">Classification Class</th>
+                <th className="px-4 py-3 font-semibold">Policy Output</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-800/80">
               {currentTableData.length > 0 ? (
                 currentTableData.map((log) => (
-                  <tr key={log._id} className="border-b border-slate-800 hover:bg-slate-800/30 transition-colors">
-                    <td className="px-4 py-3 text-slate-300">{new Date(log.timestamp).toLocaleString()}</td>
-                    <td className="px-4 py-3 font-medium">{log.attack_type || (log.is_threat ? 'Unknown Threat' : 'Normal')}</td>
-                    <td className="px-4 py-3 text-blue-400 font-mono">{log.source_ip}</td>
+                  <tr key={log._id} className="hover:bg-slate-800/30 transition-colors">
+                    <td className="px-4 py-3 text-slate-400 text-xs">{new Date(log.timestamp).toLocaleString()}</td>
                     <td className="px-4 py-3">
-                      <span className={cn(
-                        "px-2 py-1 rounded text-xs font-semibold",
-                        log.severity === 'Critical' ? 'bg-red-500/20 text-red-500' :
-                        log.severity === 'High' ? 'bg-orange-500/20 text-orange-500' :
-                        log.severity === 'Medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                        'bg-green-500/20 text-green-400'
-                      )}>
-                        {log.severity || (log.is_threat ? 'Low' : 'None')}
+                        <div className="flex items-center gap-2 font-mono text-[11px]">
+                            <span className="text-blue-400 bg-blue-500/10 px-1 py-0.5 rounded">{log.source_ip}</span>
+                            <ArrowRight className="w-3 h-3 text-slate-600" />
+                            <span className="text-emerald-400 bg-emerald-500/10 px-1 py-0.5 rounded">{log.destination_ip || 'Core Gateway'}</span>
+                        </div>
+                    </td>
+                    <td className="px-4 py-3 font-medium text-slate-300 text-xs">{log.attack_type || (log.is_threat ? 'Unknown Heuristic' : 'Benign Traffic')}</td>
+                    <td className="px-4 py-3">
+                        {log.is_threat ? (
+                            <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold">
+                                <span className="text-cyan-400">{log.model1_probability ? (log.model1_probability*100).toFixed(0) : (log.threat_probability*100).toFixed(0)}%</span>
+                                <span className="text-slate-600 mx-1">/</span>
+                                <span className="text-purple-400">{log.model2_probability ? (log.model2_probability*100).toFixed(0) : (log.threat_probability*100).toFixed(0)}%</span>
+                            </div>
+                        ) : <span className="text-slate-600 text-[10px] font-mono">{'< 0.1% / < 0.1%'}</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={cn("px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest border", log.severity === 'Critical' ? 'bg-red-500/10 text-red-500 border-red-500/30 shadow-[0_0_10px_rgba(239,68,68,0.2)]' : log.severity === 'High' ? 'bg-orange-500/10 text-orange-500 border-orange-500/30' : log.severity === 'Medium' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' : 'bg-green-500/10 text-green-400 border-green-500/30')}>
+                        {log.severity || (log.is_threat ? 'Low' : 'Secure')}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-slate-400">{log.action_taken || 'Logged'}</td>
+                    <td className="px-4 py-3 text-slate-500 text-[11px]">{log.action_taken || 'Logged to Disk Array'}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan="5" className="px-4 py-8 text-center text-slate-500">No logs found matching criteria.</td>
+                  <td colSpan="6" className="px-4 py-12 text-center text-slate-500">No telemetry packets matching your heuristic filter criteria.</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
 
-        {/* Pagination */}
         {totalPages > 1 && (
-          <div className="flex justify-between items-center mt-4 text-sm text-slate-400">
-            <span>Showing {(currentPage - 1) * logsPerPage + 1} to {Math.min(currentPage * logsPerPage, filteredLogs.length)} of {filteredLogs.length} entries</span>
+          <div className="flex justify-between items-center mt-6 text-xs text-slate-400 bg-[#0b1120] p-3 rounded-lg border border-slate-800 text-center">
+            <span>Showing {(currentPage - 1) * logsPerPage + 1} to {Math.min(currentPage * logsPerPage, filteredLogs.length)} of {filteredLogs.length} intercepted events</span>
             <div className="flex gap-2">
-              <button 
-                disabled={currentPage === 1}
-                onClick={() => setCurrentPage(p => p - 1)}
-                className="px-3 py-1 bg-slate-800 rounded hover:bg-slate-700 disabled:opacity-50"
-              >
-                Prev
-              </button>
-              <button 
-                disabled={currentPage === totalPages}
-                onClick={() => setCurrentPage(p => p + 1)}
-                className="px-3 py-1 bg-slate-800 rounded hover:bg-slate-700 disabled:opacity-50"
-              >
-                Next
-              </button>
+              <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-4 py-1.5 bg-slate-800 rounded hover:bg-slate-700 disabled:opacity-20 transition-colors">Previous Packet</button>
+              <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-4 py-1.5 bg-slate-800 rounded hover:bg-slate-700 disabled:opacity-20 transition-colors">Next Packet</button>
             </div>
           </div>
         )}
@@ -302,22 +518,31 @@ function Dashboard() {
   );
 }
 
-function StatCard({ title, value, icon, valueColor = "text-white" }) {
-  return (
-    <div className="glass-panel rounded-2xl p-5 relative overflow-hidden group">
-      <div className="absolute -right-4 -top-4 opacity-5 group-hover:scale-110 group-hover:rotate-12 transition-transform duration-500">
-        {React.cloneElement(icon, { className: "w-24 h-24" })}
-      </div>
-      <div className="flex justify-between items-start mb-3 relative z-10">
-        <h3 className="text-slate-400 font-medium text-xs lg:text-sm">{title}</h3>
-        <div className="p-1.5 bg-slate-800/50 rounded-lg backdrop-blur-md border border-slate-700/50">
-          {icon}
+function MiniStat({ label, val, icon, color, textSmall }) {
+    return (
+        <div className="glass-panel p-3 flex flex-col items-center justify-center text-center gap-1 border border-slate-800 shadow-md rounded-xl hover:border-slate-600 transition-colors">
+            {React.cloneElement(icon, { className: cn("w-5 h-5 mb-1", color) })}
+            <span className={cn("font-mono font-bold text-slate-200", textSmall ? "text-xs" : "text-lg")}>{val}</span>
+            <span className="text-[9px] uppercase tracking-wider text-slate-500">{label}</span>
         </div>
-      </div>
-      <p className={cn("text-2xl font-bold tracking-tight relative z-10", valueColor)}>
-        {value}
-      </p>
-    </div>
+    );
+}
+
+// ArrowRight icon definition
+function ArrowRight(props) {
+  return (
+    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 12h14M12 5l7 7-7 7"/>
+    </svg>
+  );
+}
+
+// Radar icon definition
+function RadarIcon(props) {
+  return (
+    <svg {...props} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><path d="M15 15h.01"/><path d="M11.2 12.8A2 2 0 1 0 12.8 11.2"/><path d="M12 12v6"/>
+    </svg>
   );
 }
 

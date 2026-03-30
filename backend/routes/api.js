@@ -3,7 +3,15 @@ const router = express.Router();
 const axios = require('axios');
 const nodemailer = require('nodemailer');
 const Log = require('../models/Log');
+const os = require('os');
+const mongoose = require('mongoose');
 
+// Track actual API traffic for real throughput calculation
+let totalApiRequests = 0;
+router.use((req, res, next) => {
+  totalApiRequests++;
+  next();
+});
 // Set up transporter (using Mailtrap sandbox for testing)
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "sandbox.smtp.mailtrap.io",
@@ -132,6 +140,58 @@ router.get('/logs', async (req, res) => {
   }
 });
 
+// Simulation Site Health Tracking State
+let simulationSiteIsDown = false;
+let isArtificiallyDown = false; // Kill switch flag
+
+// @route   POST /api/health/toggle-sim-crash
+// @desc    Artificially toggles the simulation site status for demonstration
+router.post('/health/toggle-sim-crash', (req, res) => {
+  isArtificiallyDown = !isArtificiallyDown;
+  console.log(`Simulation Site Artificial Crash is now: ${isArtificiallyDown ? 'ACTIVE (Offline)' : 'INACTIVE (Online)'}`);
+  res.json({ success: true, is_down: isArtificiallyDown });
+});
+
+// @route   GET /api/health/simulation
+// @desc    Ping simulation site to check uptime
+router.get('/health/simulation', async (req, res) => {
+  try {
+    if (isArtificiallyDown) {
+      throw new Error('Artificial 404 Simulated Crash Triggered');
+    }
+    
+    // Attempt to ping the Simulation site
+    await axios.get('http://localhost:5174/');
+    
+    // If it succeeds and was previously down, reset the lock
+    if (simulationSiteIsDown) {
+      console.log('Simulation site recovered.');
+      simulationSiteIsDown = false;
+    }
+    
+    return res.json({ status: 'up' });
+    
+  } catch (err) {
+    // Site is unreachable (down or 404)
+    if (!simulationSiteIsDown) {
+      // Send alert email since it just went down
+      simulationSiteIsDown = true;
+      console.log('Simulation site is DOWN! Sending alert...');
+      
+      const mailOptions = {
+        from: '"Cyber Sentinel Alert" <alerts@cybersentinel.local>',
+        to: process.env.ALERT_EMAIL || "cybersentinel.contact@gmail.com",
+        subject: `🔥 CRITICAL: Simulation Site is Offline!`,
+        text: `The Cyber Sentinel System Monitor has detected that the threat Simulation Interface (http://localhost:5174) is no longer responding.\n\nError: Connection Refused or 404 Not Found.\nPlease check the Node server immediately.`
+      };
+      
+      transporter.sendMail(mailOptions).catch(e => console.error('Uptime Email send failed:', e));
+    }
+    
+    return res.json({ status: 'down' });
+  }
+});
+
 // @route   GET /api/stats
 // @desc    Get dashboard statistics
 router.get('/stats', async (req, res) => {
@@ -167,6 +227,64 @@ router.get('/stats', async (req, res) => {
   } catch (err) {
     console.error('Error fetching stats:', err.message);
     res.status(500).json({ error: 'Server error fetching stats' });
+  }
+});
+
+// @route   GET /api/system-health
+// @desc    Get real-time OS and database metrics
+router.get('/system-health', async (req, res) => {
+  try {
+    const memoryUsage = process.memoryUsage();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    const cpuLoad = os.loadavg(); 
+
+    let dbStats = { dataSize: 0, storageSize: 0, objects: 0, connections: 1 };
+    if (mongoose.connection && mongoose.connection.readyState === 1 && mongoose.connection.db) {
+       dbStats = await mongoose.connection.db.command({ dbStats: 1 });
+       dbStats.connections = mongoose.connection.base.connections.length;
+    }
+
+    let mlLatency = 0;
+    let mlStatus = 'OFFLINE';
+    const start = Date.now();
+    try {
+       await axios.get(`${PYTHON_API_URL}/`, { timeout: 2000 });
+       mlLatency = Date.now() - start;
+       mlStatus = 'ONLINE';
+    } catch(e) {
+       if (e.response) {
+         mlStatus = 'ONLINE';
+         mlLatency = Date.now() - start;
+       }
+    }
+    
+    // Safety clamp: if localhost resolves too quickly, bump latency up
+    if (mlStatus === 'ONLINE' && mlLatency < 1) mlLatency = 1;
+
+    // True Average Throughput
+    const uptime = process.uptime() || 1;
+    const throughput = (totalApiRequests / uptime).toFixed(2);
+
+    res.json({
+       nodeUptime: uptime,
+       apiThroughput: throughput,
+       osTotalMem: totalMem,
+       osUsedMem: usedMem,
+       nodeUsedMem: memoryUsage.heapUsed,
+       cpuLoad1m: cpuLoad[0] || os.cpus().reduce((acc, cpu) => acc + cpu.times.user, 0) / os.cpus().length,
+       cpuCores: os.cpus().length,
+       dbDataSize: dbStats.dataSize || 0, 
+       dbStorageSize: dbStats.storageSize || 0,
+       dbObjects: dbStats.objects || 0,
+       dbConnections: dbStats.connections || 1,
+       mlLatency,
+       mlStatus
+    });
+  } catch (err) {
+    console.error('Error fetching system health:', err.message);
+    res.status(500).json({ error: 'Server error fetching health' });
   }
 });
 

@@ -70,6 +70,18 @@ export default function Simulation() {
   const [status, setStatus] = useState(null);
   const [loadingId, setLoadingId] = useState(null);
 
+  const simulateCrash = async () => {
+    try {
+      const res = await axios.post(`${API_URL}/health/toggle-sim-crash`);
+      const isDown = res.data.is_down;
+      setStatus({ type: isDown ? 'error' : 'success', message: `Server Crash Simulation is now ${isDown ? 'ACTIVE (Backend sending 404s)' : 'INACTIVE (Normal Mode)'}. Check the main SOC Dashboard!` });
+    } catch (err) {
+      setStatus({ type: 'error', message: 'Failed to toggle crash simulation.' });
+    } finally {
+      setTimeout(() => setStatus(null), 5000);
+    }
+  };
+
   const simulateAttack = async (attack) => {
     setLoadingId(attack.id);
     setStatus(null);
@@ -95,11 +107,20 @@ export default function Simulation() {
   return (
     <main className="max-w-6xl w-full space-y-6">
       <div className="flex flex-col gap-2 mb-8">
-        <h2 className="text-2xl font-bold flex items-center gap-3">
-          <Crosshair className="text-accent" />
-          Attack Scenarios
-        </h2>
-        <p className="text-slate-400 max-w-3xl">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-800 pb-4">
+          <h2 className="text-2xl font-bold flex items-center gap-3">
+            <Crosshair className="text-accent" />
+            Attack Scenarios
+          </h2>
+          <button 
+            onClick={simulateCrash}
+            className="flex items-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 hover:scale-105 border border-red-500/30 rounded-xl font-bold transition-all shadow-lg shadow-red-500/10"
+          >
+            <AlertOctagon className="w-5 h-5" />
+            Toggle Server Crash (404)
+          </button>
+        </div>
+        <p className="text-slate-400 max-w-3xl pt-2">
           Trigger simulated cyber security events to test the SOC dashboard, IDS visualization, and alerting pipeline. 
           High and Critical severities will automatically trigger email alerts.
         </p>
