@@ -5,40 +5,48 @@ import axios from 'axios';
 const API_URL = 'http://localhost:3000/api';
 
 function AuditLogs() {
-  const [logs, setLogs] = useState([
-    { id: 'AL-1001', time: new Date().toISOString(), type: 'SYSTEM_START', message: 'CyberSentinel UI Initialized.', user: 'SYSTEM' },
-    { id: 'AL-1002', time: new Date(Date.now() - 5000).toISOString(), type: 'AUTH_SUCCESS', message: 'Admin login via React UI.', user: 'admin@cybersentinel.local' }
-  ]);
+  const [logs, setLogs] = useState([]);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const fetchTrafficLogs = async () => {
+    const fetchAllLogs = async () => {
       try {
-        const res = await axios.get(`${API_URL}/logs`);
-        const trafficData = res.data.slice(0, 50).map((l, i) => ({
+        const [auditRes, trafficRes] = await Promise.all([
+          axios.get(`${API_URL}/audit-logs`),
+          axios.get(`${API_URL}/logs`)
+        ]);
+        
+        const systemAudits = auditRes.data.map(l => ({
+          id: l.id,
+          time: l.time,
+          type: l.type,
+          message: l.message,
+          user: l.user,
+          isThreat: false
+        }));
+
+        const trafficData = trafficRes.data.slice(0, 50).map((l) => ({
           id: `TR-${l._id.slice(-6).toUpperCase()}`,
           time: l.timestamp,
           type: l.is_threat ? 'THREAT_DETECTED' : 'TRAFFIC_PASS',
-          message: `${l.is_threat ? 'Blocked' : 'Allowed'} traffic from ${l.source_ip} to ${l.destination_ip}. Protocol: ${l.protocol || 'TCP'}.`,
+          message: `${l.is_threat ? 'Blocked' : 'Allowed'} traffic from ${l.source_ip} to ${l.destination_ip || 'Local Gateway'}. Payload: ${l.attack_type || 'None'}.`,
           user: l.is_threat ? 'POLICY_ENGINE' : 'FIREWALL',
           isThreat: l.is_threat
         }));
         
         // Merge and sort
-        setLogs(prev => {
-          const merged = [...prev, ...trafficData];
-          // deduplicate by id
-          const unique = merged.filter((v,i,a)=>a.findIndex(v2=>(v2.id===v.id))===i);
-          return unique.sort((a,b) => new Date(b.time) - new Date(a.time));
-        });
+        const merged = [...systemAudits, ...trafficData];
+        // deduplicate by id
+        const unique = merged.filter((v,i,a)=>a.findIndex(v2=>(v2.id===v.id))===i);
+        setLogs(unique.sort((a,b) => new Date(b.time) - new Date(a.time)));
       } catch (err) {
         console.error("Error fetching logs for audit", err);
       }
     };
-    fetchTrafficLogs();
+    fetchAllLogs();
     
     // Poll new logs
-    const interval = setInterval(fetchTrafficLogs, 5000);
+    const interval = setInterval(fetchAllLogs, 5000);
     return () => clearInterval(interval);
   }, []);
 

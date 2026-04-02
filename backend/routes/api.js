@@ -3,6 +3,8 @@ const router = express.Router();
 const axios = require('axios');
 const nodemailer = require('nodemailer');
 const Log = require('../models/Log');
+const AuditLog = require('../models/AuditLog');
+const FirewallRule = require('../models/FirewallRule');
 const os = require('os');
 const mongoose = require('mongoose');
 
@@ -137,6 +139,83 @@ router.get('/logs', async (req, res) => {
   } catch (err) {
     console.error('Error fetching logs:', err.message);
     res.status(500).json({ error: 'Server error fetching logs' });
+  }
+});
+
+// @route   GET /api/audit-logs
+// @desc    Get system audit logs
+router.get('/audit-logs', async (req, res) => {
+  try {
+    const logs = await AuditLog.find().sort({ time: -1 }).limit(100);
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch audit logs' });
+  }
+});
+
+// @route   POST /api/audit-logs
+// @desc    Create an audit log
+router.post('/audit-logs', async (req, res) => {
+  try {
+    const audit = new AuditLog(req.body);
+    await audit.save();
+    res.json(audit);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save audit log' });
+  }
+});
+
+// @route   GET /api/firewall-rules
+// @desc    Get persisted firewall rules
+router.get('/firewall-rules', async (req, res) => {
+  try {
+    const rules = await FirewallRule.find().sort({ date: -1 });
+    // Normalize _id to id for frontend
+    res.json(rules.map(r => ({ id: r._id, ip: r.ip, reason: r.reason, date: r.date })));
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch firewall rules' });
+  }
+});
+
+// @route   POST /api/firewall-rules
+// @desc    Add a firewall rule
+router.post('/firewall-rules', async (req, res) => {
+  try {
+    const rule = new FirewallRule(req.body);
+    await rule.save();
+    
+    // Auto-log to Audit Log
+    const audit = new AuditLog({
+      id: `AL-${Math.floor(Math.random()*9000)+1000}`,
+      type: 'FIREWALL_UPDATE',
+      message: `Enforced BLOCK routing denial for IP address ${req.body.ip}. Reason: ${req.body.reason}`,
+      user: 'admin@cybersentinel.local'
+    });
+    await audit.save();
+
+    res.json({ id: rule._id, ip: rule.ip, reason: rule.reason, date: rule.date });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save firewall rule' });
+  }
+});
+
+// @route   DELETE /api/firewall-rules/:id
+// @desc    Remove a firewall rule
+router.delete('/firewall-rules/:id', async (req, res) => {
+  try {
+    const rule = await FirewallRule.findByIdAndDelete(req.params.id);
+    if (rule) {
+      const audit = new AuditLog({
+        id: `AL-${Math.floor(Math.random()*9000)+1000}`,
+        type: 'FIREWALL_UPDATE',
+        message: `Removed BLOCK routing denial for IP address ${rule.ip}.`,
+        user: 'admin@cybersentinel.local'
+      });
+      await audit.save();
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete firewall rule' });
   }
 });
 

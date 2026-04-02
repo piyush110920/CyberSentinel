@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import { ShieldBan, Plus, Trash2, Search, CheckCircle, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -7,42 +8,43 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
+const API_URL = 'http://localhost:3000/api';
+
 function FirewallRules() {
-  const [rules, setRules] = useState(() => {
-    const saved = localStorage.getItem('firewall_rules');
-    return saved ? JSON.parse(saved) : [
-      { id: '1', ip: '192.168.1.100', reason: 'Repeated unauthorized access attempts', date: new Date().toISOString() },
-      { id: '2', ip: '45.33.22.11', reason: 'High-severity DDoS signature', date: new Date(Date.now() - 86400000).toISOString() }
-    ];
-  });
-  
+  const [rules, setRules] = useState([]);
   const [newIp, setNewIp] = useState('');
   const [newReason, setNewReason] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Persist rules
+  // Fetch from Mongo
   useEffect(() => {
-    localStorage.setItem('firewall_rules', JSON.stringify(rules));
-  }, [rules]);
+    axios.get(`${API_URL}/firewall-rules`).then(res => setRules(res.data)).catch(console.error);
+  }, []);
 
-  const handleAddRule = (e) => {
+  const handleAddRule = async (e) => {
     e.preventDefault();
     if (!newIp.trim()) return;
     
-    const rule = {
-      id: Date.now().toString(),
-      ip: newIp.trim(),
-      reason: newReason.trim() || 'Manual Block via SOC Dashboard',
-      date: new Date().toISOString()
-    };
-    
-    setRules(prev => [rule, ...prev]);
-    setNewIp('');
-    setNewReason('');
+    try {
+      const res = await axios.post(`${API_URL}/firewall-rules`, {
+        ip: newIp.trim(),
+        reason: newReason.trim() || 'Manual Block via SOC Dashboard'
+      });
+      setRules(prev => [res.data, ...prev]);
+      setNewIp('');
+      setNewReason('');
+    } catch (err) {
+      console.error('Failed to add rule', err);
+    }
   };
 
-  const handleRemoveRule = (id) => {
-    setRules(prev => prev.filter(r => r.id !== id));
+  const handleRemoveRule = async (id) => {
+    try {
+      await axios.delete(`${API_URL}/firewall-rules/${id}`);
+      setRules(prev => prev.filter(r => r.id !== id));
+    } catch (err) {
+      console.error('Failed to delete rule', err);
+    }
   };
 
   const filteredRules = rules.filter(r => r.ip.includes(searchTerm) || r.reason.toLowerCase().includes(searchTerm.toLowerCase()));

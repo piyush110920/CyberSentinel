@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { Crosshair, AlertOctagon, Terminal, Globe, FileWarning, ShieldOff, SearchCode, Database } from 'lucide-react';
+import { Crosshair, AlertOctagon, Terminal, Globe, ShieldOff, Activity } from 'lucide-react';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { ATTACK_CATEGORIES } from '../data/attacks';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -10,57 +11,11 @@ function cn(...inputs) {
 
 const API_URL = 'http://localhost:3000/api';
 
-const ATTACK_TYPES = [
-  {
-    id: 'bruteforce',
-    name: 'Brute Force Login',
-    severity: 'High',
-    description: 'Multiple failed login attempts detected in quick succession from the same source IP.',
-    icon: <SearchCode className="w-8 h-8 text-orange-500" />
-  },
-  {
-    id: 'sqli',
-    name: 'SQL Injection',
-    severity: 'Critical',
-    description: 'Malicious SQL fragment detected in login query parameter.',
-    icon: <Database className="w-8 h-8 text-red-500" />
-  },
-  {
-    id: 'xss',
-    name: 'Cross-Site Scripting (XSS)',
-    severity: 'Medium',
-    description: 'Suspicious script tag attempt detected in search input field.',
-    icon: <Terminal className="w-8 h-8 text-yellow-400" />
-  },
-  {
-    id: 'ddos',
-    name: 'DDoS Traffic',
-    severity: 'Critical',
-    description: 'Anomalous surge in volumetric traffic requests indicating a denial of service attack.',
-    icon: <Globe className="w-8 h-8 text-red-500" />
-  },
-  {
-    id: 'malware',
-    name: 'Malware File Upload',
-    severity: 'High',
-    description: 'File upload bypassed signature check; potential trojan detected.',
-    icon: <FileWarning className="w-8 h-8 text-orange-500" />
-  },
-  {
-    id: 'unauth_access',
-    name: 'Unauthorized File Access',
-    severity: 'Medium',
-    description: 'Access attempted to restricted /etc/passwd path via directory traversal.',
-    icon: <ShieldOff className="w-8 h-8 text-yellow-400" />
-  },
-  {
-    id: 'portscan',
-    name: 'Port Scanning Attempt',
-    severity: 'Low',
-    description: 'Sequential TCP SYN packets directed at various ports.',
-    icon: <AlertOctagon className="w-8 h-8 text-blue-400" />
-  }
-];
+const ICONS = {
+    'Globe': Globe,
+    'Terminal': Terminal,
+    'ShieldOff': ShieldOff
+};
 
 function generateRandomIP() {
   return `${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`;
@@ -69,6 +24,7 @@ function generateRandomIP() {
 export default function Simulation() {
   const [status, setStatus] = useState(null);
   const [loadingId, setLoadingId] = useState(null);
+  const [activeCategory, setActiveCategory] = useState(ATTACK_CATEGORIES[0].id);
 
   const simulateCrash = async () => {
     try {
@@ -99,19 +55,24 @@ export default function Simulation() {
       setStatus({ type: 'error', message: 'Failed to simulate attack. Is the backend running?' });
     } finally {
       setLoadingId(null);
-      // clear status after 4 seconds
       setTimeout(() => setStatus(null), 4000);
     }
   };
 
+  const activeData = ATTACK_CATEGORIES.find(c => c.id === activeCategory);
+  const ActiveIcon = ICONS[activeData?.iconName] || Activity;
+
   return (
-    <main className="max-w-6xl w-full space-y-6">
+    <main className="max-w-7xl w-full space-y-6 mx-auto pb-12">
       <div className="flex flex-col gap-2 mb-8">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-800 pb-4">
-          <h2 className="text-2xl font-bold flex items-center gap-3">
-            <Crosshair className="text-accent" />
-            Attack Scenarios
-          </h2>
+          <div className="flex items-center gap-3">
+             <Crosshair className="text-accent w-8 h-8" />
+             <div>
+                <h2 className="text-3xl font-bold bg-gradient-to-r from-red-400 to-accent bg-clip-text text-transparent">Enterprise Threat Simulation</h2>
+                <p className="text-slate-400 text-sm">Select from {ATTACK_CATEGORIES.reduce((acc, cat) => acc + cat.attacks.length, 0)}+ live payloads.</p>
+             </div>
+          </div>
           <button 
             onClick={simulateCrash}
             className="flex items-center gap-2 px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 hover:scale-105 border border-red-500/30 rounded-xl font-bold transition-all shadow-lg shadow-red-500/10"
@@ -120,10 +81,6 @@ export default function Simulation() {
             Toggle Server Crash (404)
           </button>
         </div>
-        <p className="text-slate-400 max-w-3xl pt-2">
-          Trigger simulated cyber security events to test the SOC dashboard, IDS visualization, and alerting pipeline. 
-          High and Critical severities will automatically trigger email alerts.
-        </p>
       </div>
 
       {status && (
@@ -135,38 +92,67 @@ export default function Simulation() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {ATTACK_TYPES.map((attack) => (
-          <div key={attack.id} className="glass-panel p-6 rounded-2xl flex flex-col group hover:border-accent/40 transition-colors">
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-slate-800/50 rounded-xl group-hover:scale-110 transition-transform">
-                {attack.icon}
-              </div>
-              <span className={cn(
-                "px-2.5 py-1 rounded-full text-xs font-bold",
-                attack.severity === 'Critical' ? 'bg-red-500/20 text-red-500' :
-                attack.severity === 'High' ? 'bg-orange-500/20 text-orange-500' :
-                attack.severity === 'Medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                'bg-blue-500/20 text-blue-400'
-              )}>
-                {attack.severity}
-              </span>
-            </div>
-            
-            <h3 className="text-lg font-bold text-slate-200 mb-2">{attack.name}</h3>
-            <p className="text-sm text-slate-400 mb-6 flex-1">{attack.description}</p>
-            
-            <button
-              onClick={() => simulateAttack(attack)}
-              disabled={loadingId === attack.id}
-              className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 border border-slate-700 hover:border-accent/50 group-hover:bg-slate-700/80"
-            >
-              {loadingId === attack.id ? (
-                <div className="w-5 h-5 border-2 border-slate-400 border-t-accent rounded-full animate-spin"></div>
-              ) : (
-                <>Launch Simulation</>
-              )}
-            </button>
+      {/* Tabs Menu */}
+      <div className="flex flex-wrap gap-2 mb-6 border-b border-slate-800 pb-4">
+        {ATTACK_CATEGORIES.map(category => {
+           const Icon = ICONS[category.iconName] || Activity;
+           const isActive = activeCategory === category.id;
+           return (
+             <button
+               key={category.id}
+               onClick={() => setActiveCategory(category.id)}
+               className={cn(
+                 "flex items-center gap-2 px-5 py-3 rounded-t-xl font-bold transition-colors border-b-2",
+                 isActive ? "bg-slate-800/80 border-accent text-accent" : "bg-transparent border-transparent text-slate-500 hover:bg-slate-800/40 hover:text-slate-300"
+               )}
+             >
+               <Icon className="w-5 h-5" />
+               {category.title} <span className="ml-2 px-2 py-0.5 bg-slate-800 rounded-full text-xs font-mono">{category.attacks.length}</span>
+             </button>
+           );
+        })}
+      </div>
+
+      {/* Active Category Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 animate-fade-in-up">
+        {activeData?.attacks.map((attack) => (
+          <div key={attack.id} className="glass-panel p-5 rounded-2xl flex flex-col group hover:border-slate-600 transition-colors bg-[#0a0f18] min-h-[220px]">
+             
+             <div className="flex justify-between items-start mb-3 border-b border-slate-800 pb-3">
+               <div className="p-2 bg-slate-800/50 rounded-lg group-hover:scale-110 transition-transform">
+                 <ActiveIcon className={cn(
+                   "w-6 h-6",
+                   attack.severity === 'Critical' ? 'text-red-500' :
+                   attack.severity === 'High' ? 'text-orange-500' :
+                   attack.severity === 'Medium' ? 'text-yellow-400' : 'text-blue-400'
+                 )} />
+               </div>
+               <span className={cn(
+                 "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest border",
+                 attack.severity === 'Critical' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
+                 attack.severity === 'High' ? 'bg-orange-500/10 text-orange-400 border-orange-500/30' :
+                 attack.severity === 'Medium' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' :
+                 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+               )}>
+                 {attack.severity}
+               </span>
+             </div>
+             
+             <h3 className="text-sm font-bold text-slate-200 mb-2 leading-tight">{attack.name}</h3>
+             <p className="text-xs text-slate-400 mb-4 flex-1 line-clamp-3 leading-relaxed">{attack.description}</p>
+             
+             <button
+               onClick={() => simulateAttack(attack)}
+               disabled={loadingId === attack.id}
+               className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-auto group-hover:border-slate-500 border border-transparent"
+             >
+               {loadingId === attack.id ? (
+                 <div className="w-4 h-4 border-2 border-slate-400 border-t-accent rounded-full animate-spin"></div>
+               ) : (
+                 <>Deploy Payload <Crosshair className="w-3 h-3 opacity-50" /></>
+               )}
+             </button>
+             
           </div>
         ))}
       </div>

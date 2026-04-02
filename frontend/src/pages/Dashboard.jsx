@@ -19,13 +19,38 @@ const API_URL = 'http://localhost:3000/api';
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899'];
 
+const CustomPieTooltip = ({ active, payload }) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="bg-[#0f172a] border border-slate-800 p-3 rounded-lg shadow-xl shadow-black/50 z-50 min-w-[150px]">
+        <p className="font-bold text-slate-200 mb-1">{data.name}</p>
+        <p className="text-accent font-mono text-sm">{data.value} Hits</p>
+        {data.othersList && data.othersList.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-slate-700/50">
+             <p className="text-[10px] text-slate-400 mb-2 uppercase tracking-widest font-bold">Grouped Vectors ({data.othersList.length}):</p>
+             <ul className="text-xs text-slate-300 space-y-1.5 max-h-[150px] overflow-y-auto custom-scrollbar pr-2">
+               {data.othersList.map((item, i) => (
+                   <li key={i} className="flex justify-between gap-4">
+                       <span className="truncate max-w-[200px]" title={item.name}>• {item.name}</span>
+                       <span className="text-slate-500 font-mono text-[10px]">{item.value}x</span>
+                   </li>
+               ))}
+             </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
+  return null;
+};
+
 function Dashboard() {
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState({ 
     total_analyzed: 0, total_threats: 0, recent_threats: 0, risk_level: 'Low',
     high_severity: 0, medium_severity: 0, low_severity: 0
   });
-  const [chartData, setChartData] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isAlarmActive, setIsAlarmActive] = useState(false);
   const [simulationStatus, setSimulationStatus] = useState('up');
@@ -46,7 +71,6 @@ function Dashboard() {
         ]);
         setLogs(logsRes.data);
         setStats(statsRes.data);
-        processChartData(logsRes.data);
       } catch (err) {
         console.error("Error fetching initial data.", err);
       }
@@ -60,7 +84,6 @@ function Dashboard() {
     socket.on('new_threat_log', (newLog) => {
       setLogs(prev => {
         const updated = [newLog, ...prev].slice(0, 1000); 
-        processChartData(updated);
         return updated;
       });
       
@@ -107,20 +130,63 @@ function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  const processChartData = (data) => {
-    const reversed = [...data].reverse().slice(-60); // Show last 60 ticks
-    const chart = reversed.map((log) => ({
-      time: new Date(log.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}),
-      threat: log.threat_probability * 100,
-      model1: (log.model1_probability || log.threat_probability) * 100,
-      model2: (log.model2_probability || log.threat_probability) * 100,
-      // used for scatterplot
-      epochSecs: (new Date(log.timestamp).getTime() / 1000) % 86400,
-      severityWeight: log.severity === 'Critical' ? 100 : log.severity === 'High' ? 70 : log.severity === 'Medium' ? 40 : 10,
-      type: log.attack_type || 'Unknown'
-    }));
-    setChartData(chart);
-  };
+  const [chartData, setChartData] = useState([]);
+
+  // Reference to logs for the interval to read latest without re-binding
+  const logsRef = useRef([]);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
+
+  useEffect(() => {
+    // Continuous Real-time Sweeping Graph
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const newChart = [];
+      
+      // Look back exactly 60 seconds, bucketed by 1-second intervals
+      for (let i = 59; i >= 0; i--) {
+        const bucketTime = now - (i * 1000);
+        const bucketStart = bucketTime - 1000;
+        const bucketEnd = bucketTime;
+        
+        // Find logs that happened exactly within this 1-second window
+        const bucketLogs = logsRef.current.filter(l => {
+          const t = new Date(l.timestamp).getTime();
+          return t > bucketStart && t <= bucketEnd;
+        });
+
+        if (bucketLogs.length > 0) {
+          // If there are multiple events in one second, take the highest severity/threat
+          const maxLog = bucketLogs.reduce((prev, current) => 
+            ((prev.threat_probability || 0) > (current.threat_probability || 0)) ? prev : current
+          );
+          
+          newChart.push({
+            time: new Date(bucketTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}),
+            threat: (maxLog.threat_probability || 0) * 100,
+            model1: (maxLog.model1_probability || maxLog.threat_probability || 0) * 100,
+            model2: (maxLog.model2_probability || maxLog.threat_probability || 0) * 100,
+            epochSecs: (bucketTime / 1000) % 86400,
+            severityWeight: maxLog.severity === 'Critical' ? 100 : maxLog.severity === 'High' ? 70 : maxLog.severity === 'Medium' ? 40 : 10,
+            type: maxLog.attack_type || 'Unknown'
+          });
+        } else {
+          // Zeroed baseline for continuous flat line when no events occur
+          newChart.push({
+            time: new Date(bucketTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}),
+            threat: 0,
+            model1: 0,
+            model2: 0,
+            epochSecs: (bucketTime / 1000) % 86400,
+            severityWeight: 0,
+            type: 'None'
+          });
+        }
+      }
+      setChartData(newChart);
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, []);
 
   // Advanced Metric Compilations
   const advancedMetrics = useMemo(() => {
@@ -157,27 +223,41 @@ function Dashboard() {
   // Attack Type Distribution
   const attackTypeData = useMemo(() => {
     const counts = {};
-    logs.filter(l => l.is_threat).forEach(l => {
+    const threshold = Date.now() - 60000;
+    logs.filter(l => l.is_threat && new Date(l.timestamp).getTime() >= threshold).forEach(l => {
       const type = l.attack_type || 'Unknown';
       counts[type] = (counts[type] || 0) + 1;
     });
-    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a,b)=>b.value-a.value);
-  }, [logs]);
+    const sorted = Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a,b)=>b.value-a.value);
+    
+    if (sorted.length <= 5) return sorted;
+    
+    const top5 = sorted.slice(0, 5);
+    const othersCount = sorted.length - 5;
+    const othersList = sorted.slice(5);
+    const othersSum = othersList.reduce((acc, curr) => acc + curr.value, 0);
+    
+    return [...top5, { name: `+ ${othersCount} More`, value: othersSum, othersList }];
+  }, [logs, chartData]);
 
   // Top Attacker IPs Bar Chart
   const topAttackers = useMemo(() => {
     const counts = {};
-    logs.filter(l => l.is_threat).forEach(l => {
+    const threshold = Date.now() - 60000;
+    logs.filter(l => l.is_threat && new Date(l.timestamp).getTime() >= threshold).forEach(l => {
        const ip = l.source_ip || 'Hidden';
        counts[ip] = (counts[ip] || 0) + 1;
     });
     return Object.entries(counts).map(([ip, hits]) => ({ ip, hits })).sort((a,b)=>b.hits-a.hits).slice(0, 5);
-  }, [logs]);
+  }, [logs, chartData]);
 
   // Distributed Target Ports Radar Chart data (Simulated structurally)
   const portRadarData = useMemo(() => {
       const portHits = { "Port 80 (HTTP)": 0, "Port 443 (HTTPS)": 0, "Port 22 (SSH)": 0, "Port 53 (DNS)": 0, "Port 3306 (DB)": 0, "Port 8080 (RPC)": 0 };
-      logs.filter(l => l.is_threat).forEach(l => {
+      const threshold = Date.now() - 60000;
+      let activeHits = false;
+      logs.filter(l => l.is_threat && new Date(l.timestamp).getTime() >= threshold).forEach(l => {
+          activeHits = true;
           const charCode = (l.source_ip || '').charCodeAt(0) || 0;
           if (l.attack_type?.toLowerCase().includes('ddos')) portHits["Port 80 (HTTP)"] += 5;
           else if (l.attack_type?.toLowerCase().includes('sql')) portHits["Port 3306 (DB)"] += 4;
@@ -186,8 +266,11 @@ function Dashboard() {
           else if (charCode % 2 === 0) portHits["Port 8080 (RPC)"] += 1;
           else portHits["Port 443 (HTTPS)"] += 2;
       });
+      // if no recent hits, return empty so chart says "Awaiting active targeting"
+      if (!activeHits) return [];
+      
       return Object.entries(portHits).map(([subject, hits]) => ({ subject, hits, fullMark: Math.max(...Object.values(portHits)) + 5 }));
-  }, [logs]);
+  }, [logs, chartData]);
 
   // Filter & Paginate
   const filteredLogs = useMemo(() => {
@@ -218,6 +301,10 @@ function Dashboard() {
           <p className="text-slate-400 text-sm">Real-time threat monitoring, ML inference tracking, and granular network telemetry</p>
         </div>
         <div className="flex gap-4">
+            <div className={cn("glass-panel px-4 py-2 rounded-full flex items-center gap-2 text-sm font-semibold transition-all", simulationStatus === 'up' ? "text-emerald-400" : "text-red-500 bg-red-500/10 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.3)] animate-pulse")}>
+              {simulationStatus === 'up' ? <Globe className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+              {simulationStatus === 'up' ? "Sim Active" : "Sim Offline"}
+            </div>
             <div className="glass-panel px-4 py-2 rounded-full flex items-center gap-2 text-sm font-semibold border-amber-500/30 text-amber-500">
                 <Cpu className="w-4 h-4 animate-pulse" />
                 ML Engine Active
@@ -304,26 +391,27 @@ function Dashboard() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                
-                {/* Distribution Pie */}
-                <div className="glass-panel rounded-2xl p-6 h-[280px] flex flex-col">
-                  <h3 className="text-[12px] font-bold mb-4 text-slate-400 uppercase tracking-widest text-center">Threat Signatures</h3>
+            <div className="grid grid-cols-1 gap-6 mb-6">
+                {/* Distribution Pie (Large) */}
+                <div className="glass-panel rounded-2xl p-6 h-[380px] flex flex-col">
+                  <h3 className="text-[14px] font-bold mb-4 text-slate-400 uppercase tracking-widest text-center">Threat Signatures Overview</h3>
                   <div className="flex-1 w-full min-h-0">
                     {attackTypeData.length > 0 ? (
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
-                          <Pie data={attackTypeData} cx="50%" cy="50%" innerRadius={45} outerRadius={65} paddingAngle={4} dataKey="value">
+                          <Pie data={attackTypeData} cx="50%" cy="50%" innerRadius={60} outerRadius={110} paddingAngle={2} dataKey="value" stroke="#0a0f18" strokeWidth={2}>
                             {attackTypeData.map((entry, index) => ( <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} /> ))}
                           </Pie>
-                          <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px', fontSize: '11px' }} />
-                          <Legend verticalAlign="bottom" height={24} wrapperStyle={{ fontSize: '10px' }} />
+                          <Tooltip content={<CustomPieTooltip />} cursor={false} />
+                          <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px', lineHeight: '28px', paddingLeft: '20px' }} />
                         </PieChart>
                       </ResponsiveContainer>
                     ) : <div className="h-full flex items-center justify-center text-slate-600 text-xs">Awaiting signatures...</div>}
                   </div>
                 </div>
+            </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Radar Targeted Ports */}
                 <div className="glass-panel rounded-2xl p-6 h-[280px] flex flex-col">
                   <h3 className="text-[12px] font-bold mb-2 text-slate-400 uppercase tracking-widest text-center">Service Port Targeting</h3>
